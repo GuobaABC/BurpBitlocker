@@ -65,6 +65,12 @@ def unlock_worker(drive_letter, password_queue, total_passwords, thread_id):
     """解锁工作线程 - 使用PowerShell的Unlock-BitLocker命令"""
     global unlock_success, found_password, total_attempts, start_time
     
+    # 打开 output.txt 文件以追加模式写入
+    with open('output.txt', 'a', encoding='utf-8') as f:
+        f.write(f"\n{'='*80}\n")
+        f.write(f"开始破解尝试 - 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"{'='*80}\n")
+    
     while not password_queue.empty() and not unlock_success:
         try:
             password = password_queue.get(timeout=0.1)
@@ -72,6 +78,10 @@ def unlock_worker(drive_letter, password_queue, total_passwords, thread_id):
             break
 
         success = False
+        
+        # 记录尝试的密码到 output.txt
+        with open('output.txt', 'a', encoding='utf-8') as f:
+            f.write(f"尝试密码: {password}\n")
         
         try:
             # 构建PowerShell脚本
@@ -97,7 +107,8 @@ def unlock_worker(drive_letter, password_queue, total_passwords, thread_id):
                 errors='ignore'
             )
             
-            success = (result.returncode == 0)
+            # 不仅检查返回码，还要检查输出内容，确保确实解锁成功
+            success = (result.returncode == 0) and ("SUCCESS" in result.stdout or "成功" in result.stdout)
             
             # 调试信息（前几次尝试）
             if total_attempts < 3 and thread_id == 0:
@@ -109,24 +120,7 @@ def unlock_worker(drive_letter, password_queue, total_passwords, thread_id):
         except Exception:
             success = False
         
-        # 方法2: 如果PowerShell失败，尝试manage-bde交互模式（备用）
-        if not success:
-            try:
-                # 使用communicate传递密码给manage-bde
-                process = subprocess.Popen(
-                    ['manage-bde', '-unlock', drive_letter + ':'],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding='gbk'
-                )
-                
-                stdout, stderr = process.communicate(input=password + '\n', timeout=3)
-                success = (process.returncode == 0)
-                
-            except Exception:
-                success = False
+
         
         # 处理解锁结果
         if success:
@@ -150,6 +144,19 @@ def unlock_worker(drive_letter, password_queue, total_passwords, thread_id):
                 password_queue.queue.clear()
                 password_queue.all_tasks_done.notify_all()
                 password_queue.unfinished_tasks = 0
+            
+            # 记录成功的密码到 output.txt
+            with open('output.txt', 'a', encoding='utf-8') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"🎉 破解成功！\n")
+                f.write(f"🔑 密码: {found_password}\n")
+                f.write(f"⏱️  耗时: {elapsed:.2f}秒\n")
+                f.write(f"🚀 尝试次数: {total_attempts}\n")
+                f.write(f"📊 平均速度: {speed:.1f} 密码/秒\n")
+                f.write(f"{'='*80}\n")
+            
+            # 解锁成功，立即退出函数
+            return
         
         # 更新计数
         with lock:
@@ -266,8 +273,27 @@ def get_custom_keywords():
             break
         
         if user_input:
+            # 保持原始输入
             keywords.append(user_input)
             print(f"  ✅ 添加: {user_input}")
+            
+            # 首字母大写
+            capitalized = user_input.capitalize()
+            if capitalized != user_input:
+                keywords.append(capitalized)
+                print(f"  ✅ 添加: {capitalized}")
+            
+            # 全大写
+            uppercase = user_input.upper()
+            if uppercase != user_input and uppercase != capitalized:
+                keywords.append(uppercase)
+                print(f"  ✅ 添加: {uppercase}")
+            
+            # 全小写
+            lowercase = user_input.lower()
+            if lowercase != user_input and lowercase != capitalized and lowercase != uppercase:
+                keywords.append(lowercase)
+                print(f"  ✅ 添加: {lowercase}")
     
     print(f"\n✅ 已添加 {len(keywords)} 个关键字:")
     for i, kw in enumerate(keywords, 1):
@@ -280,16 +306,80 @@ def get_custom_keywords():
         print("请重新输入...")
         return get_custom_keywords()
 
-def generate_passwords(custom_keywords):
+def get_custom_dates():
+    """获取用户自定义的特殊日期"""
+    print("\n" + "="*80)
+    print("📅 自定义特殊日期配置")
+    print("="*80)
+    print("\n请输入特殊日期（4位数字），输入 'exit' 结束输入")
+    print("例如: 0406 (回车) 1229 (回车) exit (回车)")
+    
+    dates = []
+    print("\n开始输入日期:")
+    
+    while True:
+        user_input = input("  > ").strip()
+        
+        if user_input.lower() == 'exit':
+            if len(dates) == 0:
+                print("❌ 必须至少输入一个日期")
+                continue
+            break
+        
+        if user_input and len(user_input) == 4 and user_input.isdigit():
+            dates.append(user_input)
+            print(f"  ✅ 添加: {user_input}")
+        elif user_input:
+            print("  ⚠ 请输入4位数字的日期（如 0406）")
+    
+    print(f"\n✅ 已添加 {len(dates)} 个特殊日期:")
+    for i, date in enumerate(dates, 1):
+        print(f"   {i}. {date}")
+    
+    confirm = input("\n确认使用这些日期？(y/n): ").lower()
+    if confirm == 'y':
+        return dates
+    else:
+        print("请重新输入...")
+        return get_custom_dates()
+
+def get_custom_years():
+    """获取用户自定义的年份范围"""
+    print("\n" + "="*80)
+    print("📅 自定义年份范围配置")
+    print("="*80)
+    print("\n请输入年份范围的开始年份和结束年份")
+    print("例如: 2000 2025")
+    
+    while True:
+        user_input = input("\n请输入年份范围（用空格分隔）: ").strip()
+        parts = user_input.split()
+        
+        if len(parts) == 2 and all(part.isdigit() for part in parts):
+            start_year = int(parts[0])
+            end_year = int(parts[1])
+            
+            if start_year <= end_year and start_year >= 1900 and end_year <= 2100:
+                print(f"\n✅ 年份范围设置为: {start_year} - {end_year}")
+                return start_year, end_year
+            else:
+                print("❌ 年份范围无效，请确保开始年份小于等于结束年份，且在 1900-2100 之间")
+        else:
+            print("❌ 输入格式错误，请输入两个数字年份，用空格分隔")
+
+def generate_passwords(custom_keywords, custom_dates, start_year, end_year):
     """生成密码组合"""
     str1 = custom_keywords
     
     # 年份和两位数字
-    str2 = [str(year) for year in range(2000, 2025)]
+    str2 = [str(year) for year in range(start_year, end_year + 1)]
     str2.extend([f"{num:02d}" for num in range(0, 25)])
     
     # 特殊日期
-    str3 = ["1229", "0223", "0406"]
+    str3 = custom_dates
+    
+    # 特殊符号
+    special_chars = ["", "!", "@", "#", "$", "%", "^", "&"]
     
     # 生成密码队列
     password_queue = queue.Queue()
@@ -297,20 +387,102 @@ def generate_passwords(custom_keywords):
     
     print("\n🔑 生成密码组合...")
     
-    # 组合1: str1 + str2 + str3
-    print("  生成组合: 名字 + 年份/数字 + 日期")
+    # 组合1: 关键字 + 特殊符号 + 年份
+    print("  生成组合: 关键字 + 特殊符号 + 年份")
+    for p1 in str1:
+        for char in special_chars:
+            for p2 in str2:
+                password_queue.put(p1 + char + p2)
+                generated_count += 1
+    
+    # 组合2: 关键字 + 特殊符号 + 日期
+    print("  生成组合: 关键字 + 特殊符号 + 日期")
+    for p1 in str1:
+        for char in special_chars:
+            for p3 in str3:
+                password_queue.put(p1 + char + p3)
+                generated_count += 1
+    
+    # 组合3: 关键字 + 特殊符号 + 年份 + 日期
+    print("  生成组合: 关键字 + 特殊符号 + 年份 + 日期")
+    for p1 in str1:
+        for char in special_chars:
+            for p2 in str2:
+                for p3 in str3:
+                    password_queue.put(p1 + char + p2 + p3)
+                    generated_count += 1
+    
+    # 组合4: 关键字 + 年份 + 日期
+    print("  生成组合: 关键字 + 年份 + 日期")
     for p1 in str1:
         for p2 in str2:
             for p3 in str3:
                 password_queue.put(p1 + p2 + p3)
                 generated_count += 1
     
-    # 组合2: str1 + str3
-    print("  生成组合: 名字 + 日期")
+    # 组合5: 关键字 + 年份
+    print("  生成组合: 关键字 + 年份")
+    for p1 in str1:
+        for p2 in str2:
+            password_queue.put(p1 + p2)
+            generated_count += 1
+    
+    # 组合6: 关键字 + 日期
+    print("  生成组合: 关键字 + 日期")
     for p1 in str1:
         for p3 in str3:
             password_queue.put(p1 + p3)
             generated_count += 1
+    
+    # 组合7: 年份 + 日期
+    print("  生成组合: 年份 + 日期")
+    for p2 in str2:
+        for p3 in str3:
+            password_queue.put(p2 + p3)
+            generated_count += 1
+    
+    # 组合8: 日期
+    print("  生成组合: 日期")
+    for p3 in str3:
+        password_queue.put(p3)
+        generated_count += 1
+    
+    # 组合9: 关键字 + 年份 + 日期 + 特殊符号
+    print("  生成组合: 关键字 + 年份 + 日期 + 特殊符号")
+    for p1 in str1:
+        for p2 in str2:
+            for p3 in str3:
+                for char in special_chars:
+                    if char:
+                        password_queue.put(p1 + p2 + p3 + char)
+                        generated_count += 1
+    
+    # 组合10: 关键字 + 年份 + 特殊符号
+    print("  生成组合: 关键字 + 年份 + 特殊符号")
+    for p1 in str1:
+        for p2 in str2:
+            for char in special_chars:
+                if char:
+                    password_queue.put(p1 + p2 + char)
+                    generated_count += 1
+    
+    # 组合11: 关键字 + 日期 + 特殊符号
+    print("  生成组合: 关键字 + 日期 + 特殊符号")
+    for p1 in str1:
+        for p3 in str3:
+            for char in special_chars:
+                if char:
+                    password_queue.put(p1 + p3 + char)
+                    generated_count += 1
+    
+    # 组合12: 年份 + 日期 + 特殊符号
+    print("  生成组合: 年份 + 日期 + 特殊符号")
+    for p2 in str2:
+        for p3 in str3:
+            for char in special_chars:
+                if char:
+                    password_queue.put(p2 + p3 + char)
+                    generated_count += 1
     
     total_passwords = password_queue.qsize()
     
@@ -338,12 +510,15 @@ def generate_passwords(custom_keywords):
     return password_queue, total_passwords
 
 #  测试特定密码 
-def test_specific_passwords(drive_letter, custom_keywords):
+def test_specific_passwords(drive_letter, custom_keywords, custom_dates):
     """测试一些最有可能的密码"""
     test_passwords = []
-    special_dates = ["20070406", "20071229", "20070223", "0406"]
+    # 生成测试密码：关键字 + 日期（带年份和不带年份）
     for kw in custom_keywords[:10]:
-        for date in special_dates[:3]:
+        for date in custom_dates[:3]:
+            # 测试带年份的组合
+            test_passwords.append(kw + "2007" + date)
+            # 测试不带年份的组合
             test_passwords.append(kw + date)
     
     print(f"\n🎯 测试关键密码 ({len(test_passwords)}个)...")
@@ -372,7 +547,8 @@ def test_specific_passwords(drive_letter, custom_keywords):
                 encoding='gbk'
             )
             
-            if result.returncode == 0:
+            # 不仅检查返回码，还要检查输出内容，确保确实解锁成功
+            if result.returncode == 0 and ("成功" in result.stdout or "SUCCESS" in result.stdout):
                 print(f"      🎉 成功！密码是: {password}")
                 return password
             else:
@@ -414,15 +590,21 @@ def main():
     # 获取自定义关键字
     custom_keywords = get_custom_keywords()
     
+    # 获取自定义日期
+    custom_dates = get_custom_dates()
+    
+    # 获取自定义年份范围
+    start_year, end_year = get_custom_years()
+    
     # 先测试关键密码
-    quick_password = test_specific_passwords(drive_letter, custom_keywords)
+    quick_password = test_specific_passwords(drive_letter, custom_keywords, custom_dates)
     if quick_password:
         print(f"\n🎉 快速测试成功！密码: {quick_password}")
         input("\n按Enter键退出...")
         return
     
     # 生成密码队列
-    password_queue, total_passwords = generate_passwords(custom_keywords)
+    password_queue, total_passwords = generate_passwords(custom_keywords, custom_dates, start_year, end_year)
     
     if total_passwords == 0:
         print("❌ 没有生成任何密码，请检查配置")
@@ -457,8 +639,14 @@ def main():
     
     # 主线程监控
     try:
-        # 等待所有任务完成
-        password_queue.join()
+        # 等待所有任务完成，定期检查解锁状态
+        while not unlock_success:
+            try:
+                # 等待一小段时间，然后检查解锁状态
+                password_queue.join(timeout=0.5)
+                break
+            except queue.Empty:
+                continue
         
     except KeyboardInterrupt:
         print("\n\n🛑 用户中断，正在停止...")
@@ -473,18 +661,16 @@ def main():
     elapsed_time = end_time - start_time
     
     # 显示最终结果
-    print(f"\n{'='*80}")
-    print("📊 解锁尝试完成")
-    print(f"{'='*80}")
-    print(f"⏱️  总耗时: {elapsed_time:.2f}秒")
-    print(f"🔑 尝试密码数: {total_attempts}")
-    
-    if elapsed_time > 0:
-        print(f"🚀 平均速度: {total_attempts/elapsed_time:.1f} 密码/秒")
-    
     if unlock_success and found_password:
-        print(f"\n🎉 解锁成功！")
+        print(f"\n{'='*80}")
+        print("🎉 登陆成功！")
+        print(f"{'='*80}")
         print(f"🔑 密码: {found_password}")
+        print(f"⏱️  耗时: {elapsed_time:.2f}秒")
+        print(f"🚀 尝试次数: {total_attempts}")
+        
+        if elapsed_time > 0:
+            print(f"📊 平均速度: {total_attempts/elapsed_time:.1f} 密码/秒")
         
         # 验证解锁状态
         print("\n🔍 验证解锁状态...")
@@ -493,7 +679,22 @@ def main():
             print("✅ 驱动器已成功解锁")
         else:
             print("⚠ 密码验证成功，但状态未更新")
+        
+        print("\n📝 破解尝试过的密码已保存到 output.txt 文件中")
+        print("\n✅ 您现在可以正常访问您的设备")
+        
+        input("\n按任意键退出...")
+        return
     else:
+        print(f"\n{'='*80}")
+        print("📊 解锁尝试完成")
+        print(f"{'='*80}")
+        print(f"⏱️  总耗时: {elapsed_time:.2f}秒")
+        print(f"🔑 尝试密码数: {total_attempts}")
+        
+        if elapsed_time > 0:
+            print(f"🚀 平均速度: {total_attempts/elapsed_time:.1f} 密码/秒")
+        
         print("\n❌ 未找到正确密码")
         print("\n可能原因:")
         print("1. 🔑 密码不在生成列表中")
