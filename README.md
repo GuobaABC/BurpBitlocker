@@ -20,3 +20,7 @@
 ## 与python版本不同
 - 取消了字典生成功能
 - 目前只有4个continue，可以到burp.go修改
+
+
+## 捐赠渠道
+<img width="639" height="681" alt="image" src="https://github.com/user-attachments/assets/2c465007-1feb-499f-a61c-27dea0006b81" />
